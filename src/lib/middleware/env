@@ -1,0 +1,5 @@
+KV_URL="rediss://default:ATB-AAIjcDE5NGIzMGFiOWNkM2I0MDk5OWE2ZDI2NzdlZDhhZjdjOXAxMA@workable-frog-12414.upstash.io:6379"
+KV_REST_API_URL="https://workable-frog-12414.upstash.io"
+KV_REST_API_TOKEN="ATB-AAIjcDE5NGIzMGFiOWNkM2I0MDk5OWE2ZDI2NzdlZDhhZjdjOXAxMA"
+KV_REST_API_READ_ONLY_TOKEN="AjB-AAIgcDH4ufHljgtEUi_KflrU4TJo4TDK1mbRnfZimHax_EI2Uw"
+REDIS_URL="rediss://default:ATB-AAIjcDE5NGIzMGFiOWNkM2I0MDk5OWE2ZDI2NzdlZDhhZjdjOXAxMA@workable-frog-12414.upstash.io:6379"

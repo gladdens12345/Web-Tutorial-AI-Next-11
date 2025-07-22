@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Testing
+/coverage
+
+# Next.js
+/.next/
+/out/
+
+# Production
+/build
+
+# Misc
+.DS_Store
+*.pem
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local env files
+.env*.local
+.env
+
+# Vercel
+.vercel
+
+# Typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs
+*.log
+server.log
+firebase-debug.log
+
+# Documentation and specs
+*.md
+docs/
+specs/
+
+# Test scripts
+test-*.sh
+test-*.js
+
+# Tasks files
+tasks.md
+tasks (1).md
+
+# Firebase functions node_modules
+functions/node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Keep only the essential Firebase files
+# Don't ignore firebase.json, firestore.rules, firestore.indexes.json
