@@ -6,6 +6,15 @@ import { signInWithGoogle } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import Image from 'next/image';
 import { useState, useEffect } from 'react';
+import { getApp } from '@firebase/app';
+import { getStripePayments, createCheckoutSession } from '@invertase/firestore-stripe-payments';
+
+// Initialize Stripe Payments SDK
+const app = getApp();
+const payments = getStripePayments(app, {
+  productsCollection: 'products',
+  customersCollection: 'customers',
+});
 
 export default function LandingPage() {
   const { user } = useAuth();
@@ -246,27 +255,21 @@ export default function LandingPage() {
       
       console.log('Creating checkout session for user:', user.uid);
       
-      // Create Stripe checkout session
-      const response = await fetch('/api/subscription/create-checkout', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userId: user.uid,
-          planId: 'premium'
-        }),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Checkout API error:', errorData);
-        throw new Error(errorData.error || 'Failed to create checkout session');
+      const priceId = process.env.NEXT_PUBLIC_STRIPE_PREMIUM_PRICE_ID;
+      if (!priceId) {
+        throw new Error('Price ID not configured. Check NEXT_PUBLIC_STRIPE_PREMIUM_PRICE_ID environment variable.');
       }
       
-      const { url } = await response.json();
-      console.log('Redirecting to Stripe checkout:', url);
-      window.location.href = url; // Redirect to Stripe checkout
+      // Create checkout session using Firebase Extension
+      const session = await createCheckoutSession(payments, {
+        price: priceId,
+        success_url: `${window.location.origin}/subscription-success`,
+        cancel_url: `${window.location.origin}/pricing`,
+        allow_promotion_codes: true,
+      });
+      
+      console.log('Redirecting to Stripe checkout:', session.url);
+      window.location.assign(session.url); // Redirect to Stripe checkout
     } catch (error) {
       console.error('Checkout error:', error);
       alert('Failed to start checkout. Please try again.');
