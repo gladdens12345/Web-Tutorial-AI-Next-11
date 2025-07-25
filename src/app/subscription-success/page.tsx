@@ -9,18 +9,42 @@ export default function SubscriptionSuccess() {
   const [customClaims, setCustomClaims] = useState<any>(null);
 
   useEffect(() => {
-    // Check for custom claims after subscription
-    const checkCustomClaims = async () => {
+    // Create premium user record and check claims
+    const processPremiumActivation = async () => {
       if (user) {
         try {
-          // Force token refresh to get latest claims
+          console.log('🚀 Processing premium activation for user:', user.uid);
+
+          // Step 1: Create premium_users record immediately
+          try {
+            const premiumResponse = await fetch('/api/v3/premium/register', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId: user.uid,
+                email: user.email,
+                subscriptionStatus: 'premium',
+                source: 'subscription-success'
+              })
+            });
+
+            if (premiumResponse.ok) {
+              console.log('✅ Premium user record created successfully');
+            } else {
+              console.warn('⚠️ Failed to create premium user record:', await premiumResponse.text());
+            }
+          } catch (error) {
+            console.warn('⚠️ Error creating premium user record:', error);
+          }
+
+          // Step 2: Force token refresh to get latest claims
           const token = await user.getIdToken(true);
           const decodedToken = await user.getIdTokenResult();
           setCustomClaims(decodedToken.claims);
           
           console.log('🎉 Updated custom claims:', decodedToken.claims);
           
-          // Notify Chrome extension about premium status using direct Chrome API
+          // Step 3: Notify Chrome extension about premium status using direct Chrome API
           try {
             if (typeof window !== 'undefined' && window.chrome?.runtime?.sendMessage) {
               const extensionId = 'ebjfioljljiiiaemdadedefpcdclglkk';
@@ -51,7 +75,7 @@ export default function SubscriptionSuccess() {
             console.warn('Failed to notify extension:', error);
           }
         } catch (error) {
-          console.error('Error getting custom claims:', error);
+          console.error('Error processing premium activation:', error);
         }
       }
     };
@@ -91,9 +115,9 @@ export default function SubscriptionSuccess() {
     // Notify immediately
     notifyExtensionImmediately();
     
-    // Check claims immediately and then every 5 seconds for up to 30 seconds
-    checkCustomClaims();
-    const interval = setInterval(checkCustomClaims, 5000);
+    // Process premium activation immediately and then every 5 seconds for up to 30 seconds
+    processPremiumActivation();
+    const interval = setInterval(processPremiumActivation, 5000);
     
     // Clean up after 30 seconds
     const timeout = setTimeout(() => {
