@@ -86,7 +86,44 @@ export async function POST(request: NextRequest) {
       console.warn('Failed to get custom claims in session start:', error);
     }
 
-    // SECOND: Check Firestore if no premium claims found
+    // SECOND: Check Firebase Stripe Extension customers collection for active subscriptions
+    if (!userData) {
+      try {
+        // Check customers collection for active subscriptions
+        const customerDoc = await adminDb.collection('customers').doc(userId).get();
+        if (customerDoc.exists) {
+          const customerData = customerDoc.data();
+          
+          // Check for active subscriptions
+          const subscriptionsSnapshot = await adminDb
+            .collection('customers')
+            .doc(userId)
+            .collection('subscriptions')
+            .where('status', 'in', ['active', 'trialing'])
+            .get();
+          
+          if (!subscriptionsSnapshot.empty) {
+            // User has active subscription(s)
+            const activeSubscription = subscriptionsSnapshot.docs[0].data();
+            console.log('✅ Found active subscription in customers collection:', activeSubscription.id);
+            
+            userData = {
+              subscriptionStatus: 'premium',
+              stripeCustomerId: customerData.stripeId || activeSubscription.customer,
+              stripeSubscriptionId: activeSubscription.id,
+              subscriptionStartDate: activeSubscription.created ? new Date(activeSubscription.created.seconds * 1000) : null,
+              subscriptionEndDate: activeSubscription.current_period_end ? new Date(activeSubscription.current_period_end.seconds * 1000) : null,
+              subscriptionPriceId: activeSubscription.price?.id || activeSubscription.items?.data?.[0]?.price?.id,
+              email: customerData.email || email
+            };
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to check customers collection:', error);
+      }
+    }
+    
+    // THIRD: Check legacy users collection if no subscription found
     if (!userData) {
       const userDoc = await adminDb.collection('users').doc(userId).get();
       if (userDoc.exists) {
@@ -94,7 +131,7 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    // THIRD: If not found by ID, try email lookup as fallback
+    // FOURTH: If not found by ID, try email lookup as fallback
     if (!userData) {
       try {
         const querySnapshot = await adminDb.collection('users').where('email', '==', email).limit(1).get();

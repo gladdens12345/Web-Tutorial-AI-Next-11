@@ -19,13 +19,60 @@ export default function SubscriptionSuccess() {
           setCustomClaims(decodedToken.claims);
           
           console.log('🎉 Updated custom claims:', decodedToken.claims);
+          
+          // Notify Chrome extension about premium status
+          try {
+            if (typeof window !== 'undefined' && window.postMessage) {
+              // Send message to any listening content scripts
+              window.postMessage({
+                type: 'WEB_TUTORIAL_AI_PREMIUM_ACTIVATED',
+                source: 'subscription-success',
+                data: {
+                  userId: user.uid,
+                  email: user.email,
+                  subscriptionStatus: 'premium',
+                  customClaims: decodedToken.claims,
+                  timestamp: Date.now()
+                }
+              }, '*');
+              
+              console.log('📨 Sent premium activation message to extension');
+            }
+          } catch (error) {
+            console.warn('Failed to notify extension:', error);
+          }
         } catch (error) {
           console.error('Error getting custom claims:', error);
         }
       }
     };
 
-    // Check immediately and then every 5 seconds for up to 30 seconds
+    // Function to notify extension immediately with user data if available
+    const notifyExtensionImmediately = () => {
+      if (user && typeof window !== 'undefined') {
+        try {
+          window.postMessage({
+            type: 'WEB_TUTORIAL_AI_PREMIUM_ACTIVATED',
+            source: 'subscription-success',
+            data: {
+              userId: user.uid,
+              email: user.email,
+              subscriptionStatus: 'premium',
+              timestamp: Date.now()
+            }
+          }, '*');
+          
+          console.log('📨 Sent immediate premium notification to extension');
+        } catch (error) {
+          console.warn('Failed to send immediate notification:', error);
+        }
+      }
+    };
+
+    // Notify immediately
+    notifyExtensionImmediately();
+    
+    // Check claims immediately and then every 5 seconds for up to 30 seconds
     checkCustomClaims();
     const interval = setInterval(checkCustomClaims, 5000);
     
