@@ -20,23 +20,32 @@ export default function SubscriptionSuccess() {
           
           console.log('🎉 Updated custom claims:', decodedToken.claims);
           
-          // Notify Chrome extension about premium status
+          // Notify Chrome extension about premium status using direct Chrome API
           try {
-            if (typeof window !== 'undefined' && window.postMessage) {
-              // Send message to any listening content scripts
-              window.postMessage({
-                type: 'WEB_TUTORIAL_AI_PREMIUM_ACTIVATED',
-                source: 'subscription-success',
-                data: {
+            if (typeof window !== 'undefined' && window.chrome?.runtime?.sendMessage) {
+              const extensionId = 'ebjfioljljiiiaemdadedefpcdclglkk';
+              
+              const message = {
+                type: 'USER_ACTION_SUCCESS',
+                action: 'subscription_completed',
+                userData: {
                   userId: user.uid,
                   email: user.email,
                   subscriptionStatus: 'premium',
                   customClaims: decodedToken.claims,
                   timestamp: Date.now()
                 }
-              }, '*');
+              };
               
-              console.log('📨 Sent premium activation message to extension');
+              chrome.runtime.sendMessage(extensionId, message, (response) => {
+                if (chrome.runtime.lastError) {
+                  console.log('Extension not installed or not responding:', chrome.runtime.lastError.message);
+                } else {
+                  console.log('✅ Extension notified of subscription success:', response);
+                }
+              });
+              
+              console.log('📨 Sent premium activation message to extension via Chrome API');
             }
           } catch (error) {
             console.warn('Failed to notify extension:', error);
@@ -49,20 +58,30 @@ export default function SubscriptionSuccess() {
 
     // Function to notify extension immediately with user data if available
     const notifyExtensionImmediately = () => {
-      if (user && typeof window !== 'undefined') {
+      if (user && typeof window !== 'undefined' && window.chrome?.runtime?.sendMessage) {
         try {
-          window.postMessage({
-            type: 'WEB_TUTORIAL_AI_PREMIUM_ACTIVATED',
-            source: 'subscription-success',
-            data: {
+          const extensionId = 'ebjfioljljiiiaemdadedefpcdclglkk';
+          
+          const message = {
+            type: 'USER_ACTION_SUCCESS',
+            action: 'subscription_completed',
+            userData: {
               userId: user.uid,
               email: user.email,
               subscriptionStatus: 'premium',
               timestamp: Date.now()
             }
-          }, '*');
+          };
           
-          console.log('📨 Sent immediate premium notification to extension');
+          chrome.runtime.sendMessage(extensionId, message, (response) => {
+            if (chrome.runtime.lastError) {
+              console.log('Extension not installed or not responding:', chrome.runtime.lastError.message);
+            } else {
+              console.log('✅ Extension notified immediately:', response);
+            }
+          });
+          
+          console.log('📨 Sent immediate premium notification to extension via Chrome API');
         } catch (error) {
           console.warn('Failed to send immediate notification:', error);
         }
