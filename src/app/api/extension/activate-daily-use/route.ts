@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
+import { generateSessionJWT } from '@/lib/middleware/auth';
 
 // Force dynamic rendering to prevent static caching
 export const dynamic = 'force-dynamic';
@@ -119,12 +120,61 @@ export async function POST(request: NextRequest) {
       data: verifyDoc.data()
     });
 
+    // 🔧 FIX: Create JWT session for the extension to use
+    const sessionId = `auth_${userId}_${Date.now()}`;
+    const sessionRef = adminDb.collection('sessions').doc(sessionId);
+    
+    // Get client IP for session tracking
+    const clientIP = request.ip || 
+                     request.headers.get('x-forwarded-for')?.split(',')[0] || 
+                     request.headers.get('x-real-ip') || 
+                     'unknown';
+    
+    // Create session document
+    await sessionRef.set({
+      sessionId,
+      userId,
+      email: userEmail,
+      subscriptionStatus: 'limited', // Daily use = limited subscription
+      deviceFingerprint,
+      ipAddress: clientIP,
+      userAgent: request.headers.get('user-agent') || 'unknown',
+      startTime: now,
+      lastActivity: now,
+      lastHeartbeat: now,
+      totalUsageTime: 0,
+      heartbeatCount: 0,
+      status: 'active',
+      type: 'authenticated',
+      activatedViaWebsite: true, // Flag to indicate this came from website activation
+      dailyActivationTime: now
+    });
+
+    // Generate JWT token for the extension
+    const jwtToken = generateSessionJWT({
+      sessionId,
+      userId,
+      deviceFingerprint,
+      ipAddress: clientIP,
+      subscriptionStatus: 'limited'
+    }, 7200000); // 2 hours expiration
+
+    console.log(`🎫 Created JWT session ${sessionId} for daily activation`);
+
     return NextResponse.json({
       success: true,
       message: 'Daily use activated successfully',
       dailyLimit: 3600000, // 1 hour for production (3600000ms)
       activatedAt: now.toISOString(),
       expiresAt: new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      // 🔧 NEW: Return session data for extension
+      session: {
+        sessionId,
+        token: jwtToken,
+        expiresIn: 7200, // 2 hours in seconds
+        subscriptionStatus: 'limited',
+        heartbeatUrl: `${request.headers.get('origin') || 'https://webtutorialai.com'}/api/v2/session/heartbeat`
+      },
       debug: {
         expectedDocId,
         deviceFingerprint,

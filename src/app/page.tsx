@@ -161,45 +161,36 @@ export default function LandingPage() {
       const result = await response.json();
 
       if (response.ok) {
-        // Success - notify extension
+        // Success - notify extension with JWT session data
         try {
-          console.log('🔐 DEBUG: Dispatching webTutorialAuthSuccess event with data:', {
+          console.log('🔐 DEBUG: Daily activation successful with session data:', result.session);
+
+          const sessionData = {
             userId: user.uid,
             email: user.email,
             activated: true,
             dailyUseStarted: true,
+            // 🔧 NEW: Include JWT session information
+            session: result.session,
             timestamp: new Date().toISOString()
-          });
+          };
 
-          // Send message to Chrome extension
+          console.log('🔐 DEBUG: Dispatching webTutorialAuthSuccess event with session data:', sessionData);
+
+          // Send message to Chrome extension with JWT token
           window.dispatchEvent(new CustomEvent('webTutorialAuthSuccess', {
-            detail: {
-              userId: user.uid,
-              email: user.email,
-              activated: true,
-              dailyUseStarted: true
-            }
+            detail: sessionData
           }));
 
-          console.log('✅ DEBUG: webTutorialAuthSuccess event dispatched');
+          console.log('✅ DEBUG: webTutorialAuthSuccess event dispatched with JWT token');
 
           // Try direct extension communication as well
           if (typeof chrome !== 'undefined' && chrome.runtime) {
-            console.log('🔍 DEBUG: Sending message to extension with user data:', {
-              userId: user.uid,
-              email: user.email,
-              activated: true,
-              dailyUseStarted: true
-            });
+            console.log('🔍 DEBUG: Sending message to extension with session data:', sessionData);
             
             chrome.runtime.sendMessage({
               type: 'USER_ACTION_SUCCESS',
-              userData: {
-                userId: user.uid,
-                email: user.email,
-                activated: true,
-                dailyUseStarted: true
-              }
+              userData: sessionData
             }, (response) => {
               if (chrome.runtime.lastError) {
                 console.log('❌ DEBUG: Extension message failed:', chrome.runtime.lastError);

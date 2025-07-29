@@ -92,80 +92,104 @@ async function heartbeatHandler(request: AuthenticatedRequest) {
 
     const now = new Date();
     
-    // **NEW ARCHITECTURE: Redis-based Daily Usage Tracking**
-    // Following AI recommendations - use Redis as source of truth for daily usage
-    
+    // 🔧 FIXED: Firestore-based Daily Usage Tracking (coordinated with daily-limits collection)
     const subscriptionStatus = sessionData?.subscriptionStatus || 'limited';
     
     // Determine daily limits
-    let dailyLimitSeconds: number;
+    let dailyLimitMs: number;
     switch (subscriptionStatus) {
       case 'premium':
-        dailyLimitSeconds = -1; // Unlimited
+        dailyLimitMs = -1; // Unlimited
         break;
       case 'limited':
       default:
-        dailyLimitSeconds = 300; // 5 minutes for testing (300 seconds)
+        dailyLimitMs = 3600000; // 1 hour for production (3600000ms)
         break;
     }
     
     let timeRemaining: number;
     let shouldStop: boolean;
     
-    if (dailyLimitSeconds === -1) {
+    if (dailyLimitMs === -1) {
       // Premium users have unlimited time
       timeRemaining = -1;
       shouldStop = false;
     } else {
-      // Track daily usage in Redis with atomic increment
+      // Track daily usage in Firestore daily-limits collection (same as activation uses)
       const today = now.toISOString().split('T')[0]; // YYYY-MM-DD format
-      const usageKey = `usage:${sessionData.userId}:${today}`;
+      const expectedDocId = `${sessionData.deviceFingerprint}_${today}`;
+      const dailyLimitRef = adminDb.collection('daily-limits').doc(expectedDocId);
       
       try {
-        // Import Redis here to avoid issues if not available
-        const { kv } = await import('@vercel/kv');
-        
-        // Increment usage by 30 seconds (heartbeat interval)
-        const usedSeconds = await kv.incrby(usageKey, 30);
-        
-        // Set expiration to end of day (24 hours) if this is first increment
-        if (usedSeconds === 30) {
-          await kv.expire(usageKey, 86400); // 24 hours
-        }
-        
-        // Check if daily limit exceeded
-        if (usedSeconds > dailyLimitSeconds) {
-          // Daily limit reached - return 200 with shouldStop flag (extension expects this format)
-          console.log(`💯 Daily limit reached for user ${sessionData.userId}: ${usedSeconds}s used, limit: ${dailyLimitSeconds}s`);
+        // Use transaction to atomically update usage time
+        const usageResult = await adminDb.runTransaction(async (transaction) => {
+          const dailyDoc = await transaction.get(dailyLimitRef);
           
-          // Don't increment further - user has hit their limit
-          timeRemaining = 0;
-          shouldStop = true;
+          if (!dailyDoc.exists) {
+            console.warn(`⚠️ Daily limit document not found: ${expectedDocId} - user may not have activated daily use`);
+            // If no daily activation found, deny access
+            return {
+              totalUsageTime: dailyLimitMs + 1, // Force limit exceeded
+              timeRemaining: 0,
+              shouldStop: true
+            };
+          }
+          
+          const dailyData = dailyDoc.data();
+          const currentUsage = dailyData?.totalUsageTime || 0;
+          const heartbeatIncrement = 30000; // 30 seconds in milliseconds
+          const newTotalUsage = currentUsage + heartbeatIncrement;
+          
+          // Update usage time
+          transaction.update(dailyLimitRef, {
+            totalUsageTime: newTotalUsage,
+            lastHeartbeat: now,
+            updatedAt: now
+          });
+          
+          const timeRemaining = Math.max(0, dailyLimitMs - newTotalUsage);
+          const shouldStop = newTotalUsage >= dailyLimitMs;
+          
+          return {
+            totalUsageTime: newTotalUsage,
+            timeRemaining,
+            shouldStop
+          };
+        });
+        
+        timeRemaining = usageResult.timeRemaining;
+        shouldStop = usageResult.shouldStop;
+        
+        if (shouldStop) {
+          console.log(`💯 Daily limit reached for user ${sessionData.userId}: ${usageResult.totalUsageTime}ms used, limit: ${dailyLimitMs}ms`);
         } else {
-          timeRemaining = dailyLimitSeconds - usedSeconds;
-          shouldStop = false;
+          console.log(`⏱️ Usage tracking for ${sessionData.userId}: ${usageResult.totalUsageTime}/${dailyLimitMs}ms used, ${timeRemaining}ms remaining`);
         }
         
-        console.log(`⏱️ Usage tracking for ${sessionData.userId}: ${usedSeconds}/${dailyLimitSeconds}s used, ${timeRemaining}s remaining`);
-        
-      } catch (redisError) {
-        console.error('❌ Redis usage tracking failed:', redisError);
-        // Fallback to allowing usage if Redis fails (graceful degradation)
-        timeRemaining = dailyLimitSeconds;
-        shouldStop = false;
+      } catch (firestoreError) {
+        console.error('❌ Firestore daily usage tracking failed:', firestoreError);
+        // Conservative fallback - deny access if tracking fails
+        timeRemaining = 0;
+        shouldStop = true;
       }
     }
 
-    // Update session in Firestore - simplified since Redis handles usage tracking
+    // Update session in Firestore - coordinated with daily-limits tracking
     const updateData: any = {
       lastActivity: now,
       lastHeartbeat: now,
       heartbeatCount: (sessionData?.heartbeatCount || 0) + 1,
-      subscriptionStatus: subscriptionStatus
+      subscriptionStatus: subscriptionStatus,
+      // Add current time remaining for session tracking
+      timeRemaining: timeRemaining
     };
 
-    // Note: We no longer update totalUsageTime here since Redis is the source of truth
-    // Session remains active even if daily limit reached (user can try again tomorrow)
+    // If limit reached, mark session as expired
+    if (shouldStop) {
+      updateData.status = 'expired';
+      updateData.endTime = now;
+      updateData.endReason = 'daily_limit_reached';
+    }
 
     // Add timeout and retry logic for Firestore update
     try {
@@ -188,7 +212,7 @@ async function heartbeatHandler(request: AuthenticatedRequest) {
       }
     }
 
-    console.log(`💓 Heartbeat processed for session ${sessionId}: Redis usage tracking, remaining: ${timeRemaining}s`);
+    console.log(`💓 Heartbeat processed for session ${sessionId}: Firestore daily-limits tracking, remaining: ${timeRemaining}ms`);
 
     // Return current session status
     return NextResponse.json({
