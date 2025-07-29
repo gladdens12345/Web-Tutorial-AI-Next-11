@@ -50,8 +50,54 @@ export async function POST(request: NextRequest) {
     let userData;
     let customClaims = null;
 
-    // FIRST: Check Firebase custom claims (primary source of truth)
-    if (userId) {
+    // FIRST: Check premium_users collection (primary source of truth for subscriptions)
+    if (userId || userEmail) {
+      try {
+        let premiumUserDoc;
+
+        // Try to find by userId first
+        if (userId) {
+          premiumUserDoc = await adminDb.collection('premium_users').doc(userId).get();
+        }
+
+        // If not found by userId and we have email, try to find by email
+        if (!premiumUserDoc?.exists && userEmail) {
+          const emailQuery = await adminDb.collection('premium_users')
+            .where('email', '==', userEmail)
+            .limit(1)
+            .get();
+          
+          if (!emailQuery.empty) {
+            premiumUserDoc = emailQuery.docs[0];
+          }
+        }
+
+        if (premiumUserDoc?.exists) {
+          const premiumUserData = premiumUserDoc.data();
+          console.log('✅ Found user in premium_users collection:', premiumUserData.userId);
+          
+          // Update last access time
+          await premiumUserDoc.ref.update({
+            'metadata.lastAccess': new Date(),
+            'metadata.updatedAt': new Date()
+          });
+
+          userData = {
+            subscriptionStatus: premiumUserData.subscriptionStatus,
+            stripeCustomerId: premiumUserData.stripeCustomerId,
+            stripeSubscriptionId: premiumUserData.stripeSubscriptionId,
+            subscriptionStartDate: premiumUserData.subscriptionStartDate,
+            subscriptionEndDate: premiumUserData.subscriptionEndDate,
+            email: premiumUserData.email
+          };
+        }
+      } catch (error) {
+        console.warn('Failed to check premium_users collection:', error);
+      }
+    }
+
+    // SECOND: Check Firebase custom claims (fallback for existing users)
+    if (!userData && userId) {
       try {
         const auth = getAuth();
         const userRecord = await auth.getUser(userId);
@@ -75,7 +121,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // SECOND: Check Firestore if no premium claims found
+    // THIRD: Check legacy Firestore users collection if no premium status found
     if (!userData && userId) {
       try {
         const userDoc = await adminDb.collection('users').doc(userId).get();
@@ -87,7 +133,7 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    // THIRD: Fallback to email lookup using Admin SDK
+    // FOURTH: Fallback to email lookup in legacy users collection
     if (!userData && userEmail) {
       try {
         const querySnapshot = await adminDb.collection('users').where('email', '==', userEmail).limit(1).get();

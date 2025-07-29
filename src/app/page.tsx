@@ -375,43 +375,41 @@ export default function LandingPage() {
 
           {/* Pricing Cards */}
           <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-            {/* Anonymous Trial Card - Always shown unless premium */}
-            {subscriptionStatus !== 'premium' && (
-              <div className="bg-gray-900 rounded-2xl p-8 shadow-2xl">
-                <h3 className="text-2xl font-bold text-white mb-4">Free Daily Use</h3>
-                <div className="mb-6">
-                  <span className="text-4xl font-bold text-white">1 Hour</span>
-                  <span className="text-gray-400">/day</span>
-                </div>
-                <div className="space-y-3 mb-8">
-                  <div className="flex items-center text-gray-300">
-                    <svg className="w-5 h-5 mr-3 text-green-400" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
-                    </svg>
-                    1 hour of free daily usage
-                  </div>
-                  <div className="flex items-center text-gray-300">
-                    <svg className="w-5 h-5 mr-3 text-green-400" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
-                    </svg>
-                    All features included
-                  </div>
-                  <div className="flex items-center text-gray-300">
-                    <svg className="w-5 h-5 mr-3 text-green-400" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
-                    </svg>
-                    Resets daily at midnight
-                  </div>
-                </div>
-                <button 
-                  onClick={handleStartTrial}
-                  disabled={loading}
-                  className="w-full py-3 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-semibold rounded-lg hover:shadow-lg transition disabled:opacity-50"
-                >
-                  {loading ? 'Loading...' : 'Start 1 Hour Free'}
-                </button>
+            {/* Free Daily Use Card - Always shown */}
+            <div className="bg-gray-900 rounded-2xl p-8 shadow-2xl">
+              <h3 className="text-2xl font-bold text-white mb-4">Free Daily Use</h3>
+              <div className="mb-6">
+                <span className="text-4xl font-bold text-white">1 Hour</span>
+                <span className="text-gray-400">/day</span>
               </div>
-            )}
+              <div className="space-y-3 mb-8">
+                <div className="flex items-center text-gray-300">
+                  <svg className="w-5 h-5 mr-3 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
+                  </svg>
+                  1 hour of free daily usage
+                </div>
+                <div className="flex items-center text-gray-300">
+                  <svg className="w-5 h-5 mr-3 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
+                  </svg>
+                  All features included
+                </div>
+                <div className="flex items-center text-gray-300">
+                  <svg className="w-5 h-5 mr-3 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
+                  </svg>
+                  Resets daily at midnight
+                </div>
+              </div>
+              <button 
+                onClick={handleStartTrial}
+                disabled={loading}
+                className="w-full py-3 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-semibold rounded-lg hover:shadow-lg transition disabled:opacity-50"
+              >
+                {loading ? 'Loading...' : 'Start 1 Hour Free'}
+              </button>
+            </div>
 
             {/* Premium Card */}
             <div className="bg-gray-900 rounded-2xl p-8 shadow-2xl">
