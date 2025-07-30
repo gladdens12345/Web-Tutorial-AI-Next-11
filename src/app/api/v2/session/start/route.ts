@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
 import { generateSessionJWT } from '@/lib/middleware/auth';
-import { getAuth } from 'firebase-admin/auth';
+import { getPremiumStatus } from '@/lib/services/premium-status';
 
 // Force dynamic rendering to prevent static caching
 export const dynamic = 'force-dynamic';
@@ -59,140 +59,74 @@ export async function POST(request: NextRequest) {
       }, { status: 401 });
     }
 
-    // Process authenticated user - use flexible validation like auth-status endpoint
-    let userData;
-    let customClaims = null;
-
-    // FIRST: Check Firebase custom claims (primary source of truth)
-    try {
-      const auth = getAuth();
-      const userRecord = await auth.getUser(userId);
-      customClaims = userRecord.customClaims || {};
-      
-      // Support both old Stripe claims and new Firebase Extension claims
-      if (customClaims.stripeRole === 'premium' || customClaims.premium === true || customClaims.subscriptionStatus === 'premium') {
-        console.log('✅ User has premium custom claims in session start (Firebase Extension or legacy Stripe)');
-        // If user has premium claims, use those
-        userData = {
-          subscriptionStatus: 'premium',
-          stripeCustomerId: customClaims.stripeCustomerId,
-          stripeSubscriptionId: customClaims.stripeSubscriptionId,
-          subscriptionStartDate: customClaims.subscriptionStartDate ? new Date(customClaims.subscriptionStartDate * 1000) : null,
-          subscriptionEndDate: customClaims.subscriptionEndDate ? new Date(customClaims.subscriptionEndDate * 1000) : null,
-          email: userRecord.email || email
-        };
-      }
-    } catch (error) {
-      console.warn('Failed to get custom claims in session start:', error);
-    }
-
-    // SECOND: Check Firebase Stripe Extension customers collection for active subscriptions
-    if (!userData) {
-      try {
-        // Check customers collection for active subscriptions
-        const customerDoc = await adminDb.collection('customers').doc(userId).get();
-        if (customerDoc.exists) {
-          const customerData = customerDoc.data();
-          
-          // Check for active subscriptions
-          const subscriptionsSnapshot = await adminDb
-            .collection('customers')
-            .doc(userId)
-            .collection('subscriptions')
-            .where('status', 'in', ['active', 'trialing'])
-            .get();
-          
-          if (!subscriptionsSnapshot.empty) {
-            // User has active subscription(s)
-            const activeSubscription = subscriptionsSnapshot.docs[0].data();
-            console.log('✅ Found active subscription in customers collection:', activeSubscription.id);
-            
-            userData = {
-              subscriptionStatus: 'premium',
-              stripeCustomerId: customerData.stripeId || activeSubscription.customer,
-              stripeSubscriptionId: activeSubscription.id,
-              subscriptionStartDate: activeSubscription.created ? new Date(activeSubscription.created.seconds * 1000) : null,
-              subscriptionEndDate: activeSubscription.current_period_end ? new Date(activeSubscription.current_period_end.seconds * 1000) : null,
-              subscriptionPriceId: activeSubscription.price?.id || activeSubscription.items?.data?.[0]?.price?.id,
-              email: customerData.email || email
-            };
-          }
-        }
-      } catch (error) {
-        console.warn('Failed to check customers collection:', error);
-      }
-    }
+    // Use consolidated premium status service
+    console.log('🔍 Checking premium status for session start:', { userId, email, deviceFingerprint });
+    const premiumStatus = await getPremiumStatus({ userId, email, deviceFingerprint });
     
-    // THIRD: Check legacy users collection if no subscription found
-    if (!userData) {
-      const userDoc = await adminDb.collection('users').doc(userId).get();
-      if (userDoc.exists) {
-        userData = userDoc.data();
-      }
-    }
-    
-    // FOURTH: If not found by ID, try email lookup as fallback
-    if (!userData) {
-      try {
-        const querySnapshot = await adminDb.collection('users').where('email', '==', email).limit(1).get();
-        if (!querySnapshot.empty) {
-          userData = querySnapshot.docs[0].data();
-        }
-      } catch (error) {
-        console.warn('Failed to lookup user by email:', error);
-      }
-    }
-    
-    if (!userData) {
+    if (!premiumStatus.found && !premiumStatus.userId && !premiumStatus.email) {
       return NextResponse.json({
         error: 'User not found',
         code: 'USER_NOT_FOUND'
       }, { status: 404 });
     }
 
+    const userData = {
+      subscriptionStatus: premiumStatus.subscriptionStatus,
+      stripeCustomerId: premiumStatus.stripeCustomerId,
+      stripeSubscriptionId: premiumStatus.stripeSubscriptionId,
+      subscriptionStartDate: premiumStatus.subscriptionStartDate,
+      subscriptionEndDate: premiumStatus.subscriptionEndDate,
+      email: premiumStatus.email || email
+    };
+
     // Note: Removed strict email validation to match auth-status endpoint behavior
 
-      // Create authenticated session
-      const sessionId = `auth_${userId}_${Date.now()}`;
-      const sessionRef = adminDb.collection('sessions').doc(sessionId);
-      
-      await sessionRef.set({
-        sessionId,
-        userId,
-        email,
-        subscriptionStatus: userData?.subscriptionStatus || 'anonymous',
-        deviceFingerprint,
-        ipAddress: clientIP,
-        userAgent: userAgent || request.headers.get('user-agent') || 'unknown',
-        startTime: new Date(),
-        lastActivity: new Date(),
-        lastHeartbeat: new Date(),
-        totalUsageTime: 0,
-        heartbeatCount: 0,
-        status: 'active',
-        type: 'authenticated'
-      });
+    // Create authenticated session
+    const sessionId = `auth_${userId}_${Date.now()}`;
+    const sessionRef = adminDb.collection('sessions').doc(sessionId);
+    
+    await sessionRef.set({
+      sessionId,
+      userId,
+      email: premiumStatus.email || email,
+      subscriptionStatus: premiumStatus.subscriptionStatus,
+      deviceFingerprint,
+      ipAddress: clientIP,
+      userAgent: userAgent || request.headers.get('user-agent') || 'unknown',
+      startTime: new Date(),
+      lastActivity: new Date(),
+      lastHeartbeat: new Date(),
+      totalUsageTime: 0,
+      heartbeatCount: 0,
+      status: 'active',
+      type: 'authenticated'
+    });
 
-      // Generate JWT for authenticated session
-      const jwt = generateSessionJWT({
-        sessionId,
-        userId,
-        deviceFingerprint,
-        ipAddress: clientIP,
-        subscriptionStatus: userData?.subscriptionStatus || 'limited'
-      }, getJWTExpiration()); // Environment-based expiration
+    // Generate JWT for authenticated session
+    const jwt = generateSessionJWT({
+      sessionId,
+      userId,
+      deviceFingerprint,
+      ipAddress: clientIP,
+      subscriptionStatus: premiumStatus.subscriptionStatus
+    }, getJWTExpiration()); // Environment-based expiration
 
-      console.log('✅ Created authenticated session:', sessionId);
+    console.log('✅ Created authenticated session:', {
+      sessionId,
+      subscriptionStatus: premiumStatus.subscriptionStatus,
+      source: premiumStatus.source
+    });
 
-      return NextResponse.json({
-        success: true,
-        sessionType: 'authenticated',
-        sessionId,
-        token: jwt,
-        expiresIn: Math.floor(getJWTExpiration() / 1000), // Environment-based expiration in seconds
-        subscriptionStatus: userData?.subscriptionStatus || 'limited',
-        dailyLimit: (userData?.subscriptionStatus === 'premium' || customClaims?.stripeRole === 'premium') ? -1 : 3600000 // 1 hour for production (3600000ms)
-      });
+    return NextResponse.json({
+      success: true,
+      sessionType: 'authenticated',
+      sessionId,
+      token: jwt,
+      expiresIn: Math.floor(getJWTExpiration() / 1000), // Environment-based expiration in seconds
+      subscriptionStatus: premiumStatus.subscriptionStatus,
+      dailyLimit: premiumStatus.subscriptionStatus === 'premium' ? -1 : 3600000, // 1 hour for limited users
+      premiumSource: premiumStatus.source // Debug info
+    });
 
   } catch (error) {
     console.error('Error starting session:', error);

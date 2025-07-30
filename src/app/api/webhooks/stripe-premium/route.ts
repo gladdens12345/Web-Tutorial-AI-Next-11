@@ -7,8 +7,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { headers } from 'next/headers';
-import { adminDb } from '@/lib/firebase-admin';
-import { getAuth } from 'firebase-admin/auth';
+import { 
+  lookupFirebaseUser, 
+  createOrUpdatePremiumUser, 
+  extractSubscriptionData, 
+  getSubscriptionStatus,
+  logWebhookEvent
+} from '@/lib/services/stripe-webhook-utils';
 import Stripe from 'stripe';
 
 // Initialize Stripe
@@ -88,7 +93,7 @@ export async function POST(request: NextRequest) {
  * Handle successful checkout completion
  */
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
-  console.log('🎉 Processing checkout completion:', session.id);
+  logWebhookEvent('checkout.session.completed', { sessionId: session.id });
 
   try {
     // Get customer and subscription details
@@ -108,43 +113,28 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
       return;
     }
 
-    // Extract user information
-    const email = customer.email || session.customer_details?.email;
-    if (!email) {
-      console.error('❌ No email found for customer:', customerId);
+    // Use consolidated user lookup
+    const userLookup = await lookupFirebaseUser(customer, session);
+    if (!userLookup.found || !userLookup.userId) {
+      console.error('❌ Cannot find userId for customer:', customerId);
       return;
     }
 
-    // Find the user by email
-    let userId: string | null = null;
-    try {
-      const auth = getAuth();
-      const userRecord = await auth.getUserByEmail(email);
-      userId = userRecord.uid;
-    } catch (error) {
-      console.warn('⚠️ User not found by email, checking metadata:', email);
-      
-      // Check if userId is in session metadata
-      if (session.metadata?.userId) {
-        userId = session.metadata.userId;
-      }
-    }
+    // Extract subscription data
+    const subscriptionData = extractSubscriptionData(subscription);
 
-    if (!userId) {
-      console.error('❌ Cannot find userId for email:', email);
-      return;
-    }
-
-    // Create premium user record
-    await createPremiumUserRecord({
-      userId,
-      email,
-      customerId,
-      subscription,
+    // Create premium user record using consolidated utility
+    await createOrUpdatePremiumUser({
+      userId: userLookup.userId,
+      email: userLookup.email,
+      subscriptionStatus: getSubscriptionStatus(subscription),
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: subscription.id,
+      ...subscriptionData,
       source: 'checkout_completed'
     });
 
-    console.log('✅ Premium user created from checkout completion:', userId);
+    console.log('✅ Premium user created from checkout completion:', userLookup.userId);
 
   } catch (error) {
     console.error('❌ Error processing checkout completion:', error);
