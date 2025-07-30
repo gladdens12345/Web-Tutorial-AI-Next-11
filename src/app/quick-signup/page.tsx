@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { signInWithGoogle } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
+import { notifyExtensionAuthenticationComplete } from '@/lib/extension-auth-bridge';
 
 export default function QuickSignupPage() {
   const [loading, setLoading] = useState(false);
@@ -32,54 +33,29 @@ export default function QuickSignupPage() {
       const result = await signInWithGoogle();
       console.log('Sign-in successful:', result.user?.email);
       
-      // Check if this sign-in was triggered by the Chrome extension
-      const fromExtension = searchParams.get('from') === 'extension';
-      
-      if (fromExtension) {
-        // Send authentication data to Chrome extension
-        try {
-          // For development, we'll use a different approach
-          // Store auth data in localStorage for the extension to check
-          localStorage.setItem('webTutorialAuth', JSON.stringify({
-            userId: result.user?.uid,
-            email: result.user?.email,
-            timestamp: Date.now()
-          }));
-          
-          // Try to communicate with extension if available
-          if (typeof chrome !== 'undefined' && chrome.runtime) {
-            // Try to send message to extension (this will work once extension is loaded)
-            try {
-              chrome.runtime.sendMessage('web-tutorial-ai', {
-                type: 'USER_ACTION_SUCCESS',
-                userData: {
-                  userId: result.user?.uid,
-                  email: result.user?.email
-                }
-              }, (response) => {
-                if (chrome.runtime.lastError) {
-                  console.log('Extension not available or not responding:', chrome.runtime.lastError);
-                } else {
-                  console.log('Successfully sent authentication data to extension:', response);
-                }
-              });
-            } catch (sendError) {
-              console.log('Failed to send message to extension:', sendError);
-            }
-          }
-          
-          // Also trigger a custom event that the extension can listen for
-          window.dispatchEvent(new CustomEvent('webTutorialAuthSuccess', {
-            detail: {
-              userId: result.user?.uid,
-              email: result.user?.email
-            }
-          }));
-          
-        } catch (extensionError) {
-          console.log('Failed to communicate with extension:', extensionError);
-          // Don't throw error - authentication was successful even if extension communication failed
-        }
+      // Notify Chrome extension of authentication success (always, not just from extension)
+      try {
+        // Get user's token to determine subscription status
+        const token = await result.user?.getIdToken(true);
+        const tokenResult = await result.user?.getIdTokenResult();
+        
+        // Determine subscription status from custom claims
+        const customClaims = tokenResult?.claims || {};
+        const subscriptionStatus = (customClaims.stripeRole === 'premium' || customClaims.premium === true) 
+          ? 'premium' 
+          : 'limited';
+
+        await notifyExtensionAuthenticationComplete({
+          userId: result.user?.uid || '',
+          email: result.user?.email || '',
+          subscriptionStatus,
+          customClaims
+        });
+        
+        console.log('✅ Extension notified of authentication success');
+      } catch (extensionError) {
+        console.warn('Failed to notify extension:', extensionError);
+        // Don't throw error - authentication was successful even if extension communication failed
       }
       
       // Redirect to return URL or main page after sign-in

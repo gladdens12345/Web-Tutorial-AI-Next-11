@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import Link from 'next/link';
+import { notifyExtensionSubscriptionComplete } from '@/lib/extension-auth-bridge';
 
 export default function SubscriptionSuccess() {
   const { user } = useAuth();
@@ -44,33 +45,16 @@ export default function SubscriptionSuccess() {
           
           console.log('🎉 Updated custom claims:', decodedToken.claims);
           
-          // Step 3: Notify Chrome extension about premium status using direct Chrome API
+          // Step 3: Notify Chrome extension about premium status using improved bridge
           try {
-            if (typeof window !== 'undefined' && window.chrome?.runtime?.sendMessage) {
-              const extensionId = 'ebjfioljljiiiaemdadedefpcdclglkk';
-              
-              const message = {
-                type: 'USER_ACTION_SUCCESS',
-                action: 'subscription_completed',
-                userData: {
-                  userId: user.uid,
-                  email: user.email,
-                  subscriptionStatus: 'premium',
-                  customClaims: decodedToken.claims,
-                  timestamp: Date.now()
-                }
-              };
-              
-              chrome.runtime.sendMessage(extensionId, message, (response) => {
-                if (chrome.runtime.lastError) {
-                  console.log('Extension not installed or not responding:', chrome.runtime.lastError.message);
-                } else {
-                  console.log('✅ Extension notified of subscription success:', response);
-                }
-              });
-              
-              console.log('📨 Sent premium activation message to extension via Chrome API');
-            }
+            await notifyExtensionSubscriptionComplete({
+              userId: user.uid,
+              email: user.email || '',
+              subscriptionStatus: 'premium',
+              customClaims: decodedToken.claims
+            });
+            
+            console.log('✅ Extension notified of premium subscription via improved bridge');
           } catch (error) {
             console.warn('Failed to notify extension:', error);
           }
@@ -80,40 +64,6 @@ export default function SubscriptionSuccess() {
       }
     };
 
-    // Function to notify extension immediately with user data if available
-    const notifyExtensionImmediately = () => {
-      if (user && typeof window !== 'undefined' && window.chrome?.runtime?.sendMessage) {
-        try {
-          const extensionId = 'ebjfioljljiiiaemdadedefpcdclglkk';
-          
-          const message = {
-            type: 'USER_ACTION_SUCCESS',
-            action: 'subscription_completed',
-            userData: {
-              userId: user.uid,
-              email: user.email,
-              subscriptionStatus: 'premium',
-              timestamp: Date.now()
-            }
-          };
-          
-          chrome.runtime.sendMessage(extensionId, message, (response) => {
-            if (chrome.runtime.lastError) {
-              console.log('Extension not installed or not responding:', chrome.runtime.lastError.message);
-            } else {
-              console.log('✅ Extension notified immediately:', response);
-            }
-          });
-          
-          console.log('📨 Sent immediate premium notification to extension via Chrome API');
-        } catch (error) {
-          console.warn('Failed to send immediate notification:', error);
-        }
-      }
-    };
-
-    // Notify immediately
-    notifyExtensionImmediately();
     
     // Process premium activation immediately and then every 5 seconds for up to 30 seconds
     processPremiumActivation();
