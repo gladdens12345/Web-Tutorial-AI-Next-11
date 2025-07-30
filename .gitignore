@@ -62,5 +62,8 @@ functions/node_modules/
 .DS_Store
 Thumbs.db
 
+# Security - prevent hardcoded credentials
+src/lib/middleware/env
+
 # Keep only the essential Firebase files
 # Don't ignore firebase.json, firestore.rules, firestore.indexes.json
