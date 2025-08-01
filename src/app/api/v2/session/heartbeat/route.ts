@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
 import { withAuth, type AuthenticatedRequest } from '@/lib/middleware/auth';
 import { FieldValue } from 'firebase-admin/firestore';
+import { getPremiumStatus } from '@/lib/services/premium-status';
 
 // Force dynamic rendering to prevent static caching
 export const dynamic = 'force-dynamic';
@@ -92,8 +93,37 @@ async function heartbeatHandler(request: AuthenticatedRequest) {
 
     const now = new Date();
     
-    // 🔧 FIXED: Firestore-based Daily Usage Tracking (coordinated with daily-limits collection)
-    const subscriptionStatus = sessionData?.subscriptionStatus || 'limited';
+    // 🔧 FIXED: Real-time premium status check to handle upgrades/downgrades during session
+    console.log('🔍 Checking real-time premium status for heartbeat...');
+    const premiumStatusResult = await getPremiumStatus({
+      userId: sessionData.userId,
+      email: sessionData.email,
+      deviceFingerprint: sessionData.deviceFingerprint
+    });
+    
+    const subscriptionStatus = premiumStatusResult.subscriptionStatus;
+    const isUpgrade = sessionData.subscriptionStatus !== subscriptionStatus;
+    
+    if (isUpgrade) {
+      console.log('🎉 Subscription status changed during session:', {
+        userId: sessionData.userId,
+        previous: sessionData.subscriptionStatus,
+        current: subscriptionStatus,
+        sessionId: sessionId
+      });
+      
+      // Update session with new premium status
+      await sessionRef.update({
+        subscriptionStatus: subscriptionStatus,
+        premiumStatusUpdated: now,
+        'metadata.premiumStatusHistory': FieldValue.arrayUnion({
+          from: sessionData.subscriptionStatus,
+          to: subscriptionStatus,
+          timestamp: now,
+          source: 'heartbeat_refresh'
+        })
+      });
+    }
     
     // Determine daily limits
     let dailyLimitMs: number;

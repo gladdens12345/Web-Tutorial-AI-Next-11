@@ -7,6 +7,7 @@
 
 import { adminDb } from '@/lib/firebase-admin';
 import { getAuth } from 'firebase-admin/auth';
+import { logPremiumStatusCheck, logCriticalConflict } from './premium-status-logger';
 
 export interface PremiumStatusRequest {
   userId?: string;
@@ -21,10 +22,13 @@ export interface PremiumStatusResult {
   subscriptionStatus: 'premium' | 'limited' | 'anonymous';
   subscriptionEndDate: Date | null;
   deviceRegistered: boolean;
-  source: 'premium_users' | 'custom_claims' | 'customers_collection' | 'users_collection' | 'not_found' | 'error';
+  source: 'premium_users' | 'custom_claims' | 'customers_collection' | 'users_collection' | 'not_found' | 'error' | 'conflict_resolved';
   stripeCustomerId?: string | null;
   stripeSubscriptionId?: string | null;
   subscriptionStartDate?: Date | null;
+  confidence: number; // 0-100, indicates confidence in the result
+  conflictDetected?: boolean;
+  conflictSources?: string[];
   metadata?: {
     lastAccess?: Date;
     createdAt?: Date;
@@ -33,7 +37,7 @@ export interface PremiumStatusResult {
 }
 
 /**
- * Check premium status using consolidated multi-source validation
+ * Check premium status using consolidated multi-source validation with conflict resolution
  * This replaces all duplicate validation logic across API endpoints
  */
 export async function getPremiumStatus(request: PremiumStatusRequest): Promise<PremiumStatusResult> {
@@ -46,30 +50,150 @@ export async function getPremiumStatus(request: PremiumStatusRequest): Promise<P
 
   console.log('🔍 Premium status check for:', { userId, email, deviceFingerprint });
 
-  // PRIMARY: Check premium_users collection (main source of truth)
-  let result = await checkPremiumUsersCollection({ userId, email, deviceFingerprint });
-  if (result.found) {
-    console.log('✅ Found premium status in premium_users collection');
-    return result;
+  // Check ALL sources simultaneously for conflict detection
+  const sourceResults = await Promise.allSettled([
+    checkPremiumUsersCollection({ userId, email, deviceFingerprint }),
+    checkCustomClaims({ userId, email }),
+    checkStripeExtensionCustomers({ userId, email }),
+    checkLegacyUsersCollection({ userId, email })
+  ]);
+
+  // Extract successful results
+  const validResults = sourceResults
+    .filter((result): result is PromiseFulfilledResult<PremiumStatusResult> => 
+      result.status === 'fulfilled' && result.value.found
+    )
+    .map(result => result.value);
+
+  let finalResult: PremiumStatusResult;
+
+  if (validResults.length === 0) {
+    // No premium status found anywhere
+    console.log('ℹ️ No premium status found in any source, defaulting to limited');
+    finalResult = {
+      found: false,
+      userId: userId || null,
+      email: email || null,
+      subscriptionStatus: 'limited',
+      subscriptionEndDate: null,
+      deviceRegistered: false,
+      source: 'not_found',
+      confidence: 100
+    };
+  } else if (validResults.length === 1) {
+    // Single source found, high confidence
+    const result = validResults[0];
+    console.log('✅ Single source premium status found:', result.source);
+    finalResult = { ...result, confidence: 95 };
+  } else {
+    // Multiple sources found - need conflict resolution
+    console.log('⚠️ Conflict detected between sources:', validResults.map(r => r.source));
+    finalResult = await resolveConflicts(validResults, { userId, email, deviceFingerprint });
   }
 
-  // FALLBACK: Check other sources for backward compatibility
-  result = await checkFallbackSources({ userId, email });
-  if (result.found) {
-    console.log('✅ Found premium status in fallback sources:', result.source);
-    return result;
-  }
+  // Log the premium status check for debugging
+  await logPremiumStatusCheck({
+    timestamp: new Date(),
+    userId: finalResult.userId,
+    email: finalResult.email,
+    deviceFingerprint: deviceFingerprint,
+    action: 'status_check',
+    subscriptionStatus: finalResult.subscriptionStatus,
+    source: finalResult.source,
+    confidence: finalResult.confidence,
+    conflictDetected: finalResult.conflictDetected,
+    conflictSources: finalResult.conflictSources,
+    metadata: {
+      sourcesChecked: sourceResults.length,
+      validSources: validResults.length,
+      requestContext: 'getPremiumStatus'
+    }
+  });
 
-  // DEFAULT: Limited user
-  console.log('ℹ️ No premium status found, defaulting to limited');
+  return finalResult;
+}
+
+/**
+ * Resolve conflicts between multiple data sources
+ * Priority order: premium_users > custom_claims > customers_collection > users_collection
+ */
+async function resolveConflicts(results: PremiumStatusResult[], request: PremiumStatusRequest): Promise<PremiumStatusResult> {
+  const { userId, email, deviceFingerprint } = request;
+  
+  // Define source priority (higher number = higher priority)
+  const sourcePriority = {
+    'premium_users': 100,
+    'custom_claims': 80,
+    'customers_collection': 60,
+    'users_collection': 40
+  };
+
+  // Check for subscription status conflicts
+  const premiumResults = results.filter(r => r.subscriptionStatus === 'premium');
+  const limitedResults = results.filter(r => r.subscriptionStatus === 'limited');
+  
+  if (premiumResults.length > 0 && limitedResults.length > 0) {
+    // Conflict between premium and limited status
+    console.log('🚨 CRITICAL: Premium/Limited conflict detected:', {
+      userId,
+      email,
+      premiumSources: premiumResults.map(r => r.source),
+      limitedSources: limitedResults.map(r => r.source)
+    });
+    
+    // Find the highest priority premium result
+    const bestPremiumResult = premiumResults.reduce((best, current) => {
+      const currentPriority = sourcePriority[current.source as keyof typeof sourcePriority] || 0;
+      const bestPriority = sourcePriority[best.source as keyof typeof sourcePriority] || 0;
+      return currentPriority > bestPriority ? current : best;
+    });
+    
+    // Log the resolution decision
+    console.log('✅ Conflict resolved - choosing premium status from:', bestPremiumResult.source);
+    
+    // Log critical conflict for investigation
+    await logCriticalConflict({
+      userId: userId || 'unknown',
+      email: email || 'unknown',
+      conflictingSources: results.map(r => ({
+        source: r.source,
+        subscriptionStatus: r.subscriptionStatus,
+        timestamp: new Date()
+      })),
+      resolution: {
+        chosenStatus: bestPremiumResult.subscriptionStatus,
+        chosenSource: bestPremiumResult.source,
+        reason: 'Premium status takes precedence over limited'
+      },
+      context: {
+        deviceFingerprint,
+        endpoint: 'getPremiumStatus'
+      }
+    });
+    
+    return {
+      ...bestPremiumResult,
+      confidence: 75, // Lower confidence due to conflict
+      conflictDetected: true,
+      conflictSources: results.map(r => r.source),
+      source: 'conflict_resolved'
+    };
+  }
+  
+  // No premium/limited conflict - choose highest priority source
+  const bestResult = results.reduce((best, current) => {
+    const currentPriority = sourcePriority[current.source as keyof typeof sourcePriority] || 0;
+    const bestPriority = sourcePriority[best.source as keyof typeof sourcePriority] || 0;
+    return currentPriority > bestPriority ? current : best;
+  });
+  
+  console.log('✅ Multiple sources agree - using highest priority:', bestResult.source);
+  
   return {
-    found: false,
-    userId: userId || null,
-    email: email || null,
-    subscriptionStatus: 'limited',
-    subscriptionEndDate: null,
-    deviceRegistered: false,
-    source: 'not_found'
+    ...bestResult,
+    confidence: 85, // High confidence when sources agree
+    conflictDetected: false,
+    conflictSources: results.map(r => r.source)
   };
 }
 
@@ -314,6 +438,92 @@ function createErrorResult(code: string, error: any): PremiumStatusResult {
     subscriptionEndDate: null,
     deviceRegistered: false,
     source: 'error'
+  };
+}
+
+/**
+ * Check Firebase custom claims
+ */
+async function checkCustomClaims({ userId, email }: PremiumStatusRequest): Promise<PremiumStatusResult> {
+  if (!userId) {
+    return createNotFoundResult(userId, email);
+  }
+
+  try {
+    const auth = getAuth();
+    const userRecord = await auth.getUser(userId);
+    const customClaims = userRecord.customClaims || {};
+
+    if (customClaims.stripeRole === 'premium' || customClaims.premium === true) {
+      return {
+        found: true,
+        userId,
+        email: email || userRecord.email || null,
+        subscriptionStatus: 'premium',
+        subscriptionEndDate: null,
+        deviceRegistered: false,
+        source: 'custom_claims',
+        confidence: 80,
+        stripeCustomerId: customClaims.stripeCustomerId || null,
+        stripeSubscriptionId: customClaims.stripeSubscriptionId || null
+      };
+    }
+
+    return createNotFoundResult(userId, email);
+  } catch (error) {
+    console.warn('Failed to check custom claims:', error);
+    return createNotFoundResult(userId, email);
+  }
+}
+
+/**
+ * Check Stripe Extension customers collection
+ */
+async function checkStripeExtensionCustomers({ userId, email }: PremiumStatusRequest): Promise<PremiumStatusResult> {
+  if (!userId) {
+    return createNotFoundResult(userId, email);
+  }
+
+  try {
+    const customerDoc = await adminDb.collection('customers').doc(userId).get();
+    
+    if (customerDoc.exists) {
+      const customerData = customerDoc.data();
+      const subscriptionStatus = customerData?.stripeRole === 'premium' ? 'premium' : 'limited';
+      
+      return {
+        found: subscriptionStatus === 'premium',
+        userId,
+        email: email || customerData?.email || null,
+        subscriptionStatus,
+        subscriptionEndDate: null,
+        deviceRegistered: false,
+        source: 'customers_collection',
+        confidence: 70,
+        stripeCustomerId: customerData?.stripeId || null
+      };
+    }
+
+    return createNotFoundResult(userId, email);
+  } catch (error) {
+    console.warn('Failed to check customers collection:', error);
+    return createNotFoundResult(userId, email);
+  }
+}
+
+/**
+ * Helper function to create not found result
+ */
+function createNotFoundResult(userId: string | null, email: string | null): PremiumStatusResult {
+  return {
+    found: false,
+    userId,
+    email,
+    subscriptionStatus: 'limited',
+    subscriptionEndDate: null,
+    deviceRegistered: false,
+    source: 'not_found',
+    confidence: 100
   };
 }
 

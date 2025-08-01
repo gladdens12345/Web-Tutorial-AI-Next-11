@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
     oneHourAgo.setHours(oneHourAgo.getHours() - 1);
     
     // Find stale active sessions
-    const staleSessionsQuery = await adminDb.collection('usage_sessions')
+    const staleSessionsQuery = await adminDb.collection('sessions')
       .where('status', '==', 'active')
       .where('lastHeartbeat', '<', oneHourAgo)
       .get();
@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
-    const oldSessionsQuery = await adminDb.collection('usage_sessions')
+    const oldSessionsQuery = await adminDb.collection('sessions')
       .where('endTime', '<', sevenDaysAgo)
       .where('status', 'in', ['completed', 'timeout'])
       .limit(100) // Process in batches to avoid timeouts

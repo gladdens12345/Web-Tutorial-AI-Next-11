@@ -7,6 +7,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { headers } from 'next/headers';
+import { getAuth } from 'firebase-admin/auth';
+import { adminDb } from '@/lib/firebase-admin';
 import { 
   lookupFirebaseUser, 
   createOrUpdatePremiumUser, 
@@ -46,39 +48,86 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    console.log('🎣 Stripe webhook received:', event.type);
+    console.log('🎣 Stripe webhook received:', {
+      type: event.type,
+      id: event.id,
+      timestamp: new Date(event.created * 1000).toISOString(),
+      livemode: event.livemode
+    });
 
-    // Handle different event types
-    switch (event.type) {
-      case 'checkout.session.completed':
-        await handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session);
-        break;
+    // Handle different event types with comprehensive error handling
+    try {
+      switch (event.type) {
+        case 'checkout.session.completed':
+          console.log('💳 Processing checkout completion...');
+          await handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session);
+          console.log('✅ Checkout completion processed successfully');
+          break;
 
-      case 'customer.subscription.created':
-        await handleSubscriptionCreated(event.data.object as Stripe.Subscription);
-        break;
+        case 'customer.subscription.created':
+          console.log('🔔 Processing subscription creation...');
+          await handleSubscriptionCreated(event.data.object as Stripe.Subscription);
+          console.log('✅ Subscription creation processed successfully');
+          break;
 
-      case 'customer.subscription.updated':
-        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription);
-        break;
+        case 'customer.subscription.updated':
+          console.log('🔄 Processing subscription update...');
+          await handleSubscriptionUpdated(event.data.object as Stripe.Subscription);
+          console.log('✅ Subscription update processed successfully');
+          break;
 
-      case 'customer.subscription.deleted':
-        await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
-        break;
+        case 'customer.subscription.deleted':
+          console.log('❌ Processing subscription deletion...');
+          await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
+          console.log('✅ Subscription deletion processed successfully');
+          break;
 
-      case 'invoice.payment_succeeded':
-        await handlePaymentSucceeded(event.data.object as Stripe.Invoice);
-        break;
+        case 'invoice.payment_succeeded':
+          console.log('💰 Processing successful payment...');
+          await handlePaymentSucceeded(event.data.object as Stripe.Invoice);
+          console.log('✅ Payment success processed successfully');
+          break;
 
-      case 'invoice.payment_failed':
-        await handlePaymentFailed(event.data.object as Stripe.Invoice);
-        break;
+        case 'invoice.payment_failed':
+          console.log('💸 Processing failed payment...');
+          await handlePaymentFailed(event.data.object as Stripe.Invoice);
+          console.log('✅ Payment failure processed successfully');
+          break;
 
-      default:
-        console.log(`⚠️ Unhandled event type: ${event.type}`);
+        default:
+          console.log(`⚠️ Unhandled event type: ${event.type}`);
+      }
+
+      // Log successful webhook processing
+      console.log('✅ Webhook processed successfully:', {
+        type: event.type,
+        id: event.id,
+        processingTime: Date.now() - event.created * 1000
+      });
+
+    } catch (eventError) {
+      console.error('❌ Error processing webhook event:', {
+        type: event.type,
+        id: event.id,
+        error: eventError instanceof Error ? {
+          name: eventError.name,
+          message: eventError.message,
+          stack: eventError.stack
+        } : eventError
+      });
+      
+      // Still return success to Stripe to avoid retries for application errors
+      // Only return error for actual system failures
+      if (eventError instanceof Error && eventError.message.includes('network')) {
+        throw eventError; // Let outer catch handle network errors
+      }
     }
 
-    return NextResponse.json({ received: true });
+    return NextResponse.json({ 
+      received: true,
+      eventType: event.type,
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error) {
     console.error('❌ Webhook handler error:', error);
@@ -357,21 +406,48 @@ async function createPremiumUserRecord({
     }
   };
 
-  // Write to premium_users collection
-  await adminDb.collection('premium_users').doc(userId).set(premiumUserData, { merge: true });
-
-  // Set Firebase custom claims for backward compatibility
+  // Use atomic transaction to prevent race conditions
+  const premiumUserRef = adminDb.collection('premium_users').doc(userId);
+  
   try {
-    const auth = getAuth();
-    await auth.setCustomUserClaims(userId, {
-      subscriptionStatus: 'premium',
-      stripeCustomerId: customerId,
-      stripeSubscriptionId: subscription.id,
-      premium: true,
-      stripeRole: 'premium'
+    await adminDb.runTransaction(async (transaction) => {
+      const existingDoc = await transaction.get(premiumUserRef);
+      
+      if (existingDoc.exists) {
+        // Update existing record
+        const updateData = {
+          ...premiumUserData,
+          'metadata.updatedAt': new Date(),
+          'metadata.lastAccess': new Date(),
+          'metadata.version': (existingDoc.data()?.metadata?.version || 0) + 1
+        };
+        transaction.update(premiumUserRef, updateData);
+        console.log('✅ Updated existing premium user record:', userId);
+      } else {
+        // Create new record
+        transaction.set(premiumUserRef, premiumUserData);
+        console.log('✅ Created new premium user record:', userId);
+      }
     });
+
+    // Set Firebase custom claims for backward compatibility (outside transaction)
+    try {
+      const auth = getAuth();
+      await auth.setCustomUserClaims(userId, {
+        subscriptionStatus: 'premium',
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscription.id,
+        premium: true,
+        stripeRole: 'premium'
+      });
+      console.log('✅ Set custom claims for user:', userId);
+    } catch (error) {
+      console.warn('⚠️ Failed to set custom claims:', error);
+    }
+
   } catch (error) {
-    console.warn('⚠️ Failed to set custom claims:', error);
+    console.error('❌ Failed to create/update premium user record:', error);
+    throw error;
   }
 }
 
@@ -379,25 +455,60 @@ async function createPremiumUserRecord({
  * Update existing premium user record
  */
 async function updatePremiumUserRecord(userId: string, updates: any) {
-  const updateData = {
-    ...updates,
-    'metadata.updatedAt': new Date(),
-    'metadata.lastAccess': new Date()
-  };
+  const premiumUserRef = adminDb.collection('premium_users').doc(userId);
+  
+  try {
+    await adminDb.runTransaction(async (transaction) => {
+      const existingDoc = await transaction.get(premiumUserRef);
+      
+      if (existingDoc.exists) {
+        const currentData = existingDoc.data();
+        const updateData = {
+          ...updates,
+          'metadata.updatedAt': new Date(),
+          'metadata.lastAccess': new Date(),
+          'metadata.version': (currentData?.metadata?.version || 0) + 1
+        };
+        
+        transaction.update(premiumUserRef, updateData);
+        console.log('✅ Updated premium user record:', userId);
+      } else {
+        console.warn('⚠️ Premium user record not found for update:', userId);
+        // Create the record if it doesn't exist
+        const newData = {
+          userId,
+          subscriptionStatus: updates.subscriptionStatus || 'premium',
+          ...updates,
+          metadata: {
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            lastAccess: new Date(),
+            version: 1,
+            source: 'webhook_update'
+          }
+        };
+        transaction.set(premiumUserRef, newData);
+        console.log('✅ Created premium user record during update:', userId);
+      }
+    });
 
-  await adminDb.collection('premium_users').doc(userId).update(updateData);
-
-  // Update custom claims if subscription status changed
-  if (updates.subscriptionStatus) {
-    try {
-      const auth = getAuth();
-      await auth.setCustomUserClaims(userId, {
-        subscriptionStatus: updates.subscriptionStatus,
-        premium: updates.subscriptionStatus === 'premium',
-        stripeRole: updates.subscriptionStatus === 'premium' ? 'premium' : null
-      });
-    } catch (error) {
-      console.warn('⚠️ Failed to update custom claims:', error);
+    // Update custom claims if subscription status changed (outside transaction)
+    if (updates.subscriptionStatus) {
+      try {
+        const auth = getAuth();
+        await auth.setCustomUserClaims(userId, {
+          subscriptionStatus: updates.subscriptionStatus,
+          premium: updates.subscriptionStatus === 'premium',
+          stripeRole: updates.subscriptionStatus === 'premium' ? 'premium' : null
+        });
+        console.log('✅ Updated custom claims for user:', userId);
+      } catch (error) {
+        console.warn('⚠️ Failed to update custom claims:', error);
+      }
     }
+
+  } catch (error) {
+    console.error('❌ Failed to update premium user record:', error);
+    throw error;
   }
 }
