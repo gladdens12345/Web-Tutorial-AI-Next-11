@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can read/write their own user document
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Extension sessions - only functions can write, users can read their own
+    match /extension_sessions/{sessionId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only Firebase Functions can write
+    }
+    
+    // Legacy premium_users collection (read-only for migration)
+    match /premium_users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false; // Writes are disabled, handled by admin SDK only
+    }
+    
+    // Firebase Stripe Extension collections (read-only for users)
+    match /customers/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false; // Only Firebase Functions can write
+      
+      match /checkout_sessions/{sessionId} {
+        allow read, create: if request.auth != null && request.auth.uid == userId;
+        allow write: if false;
+      }
+      
+      match /subscriptions/{subscriptionId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if false;
+      }
+      
+      match /payments/{paymentId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if false;
+      }
+    }
+    
+    // Products collection (read-only for all authenticated users)
+    match /products/{productId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+      
+      match /prices/{priceId} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+    }
+    
+    // Admin-only collections
+    match /admin/{document=**} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.email in ['gladdensvp@gmail.com'];
+    }
+    
+    // Default deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+  
+  
+}

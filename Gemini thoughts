@@ -1,0 +1,49 @@
+Of course. Based on the complete architecture you've provided, I can explain why this is happening.
+
+You are able to use the extension with a non-premium account because your server's complex, multi-source subscription check is finding stale or incorrect "premium" data in one of its three fallback locations, most likely in the Firebase custom claims associated with your user account.
+
+How the False Positive Occurs
+Even though the primary premium_users collection is correct (and does not list your account as premium), your server's validation logic doesn't stop there. According to your own API specifications, the server continues to check other places for proof of a subscription.
+
+Here is the validation process that is granting you unintended access:
+
+Extension Starts: The extension calls the /api/extension/auth-status endpoint on your server.
+
+Server Starts Multi-Source Check: The server begins its four-step validation process to determine your subscription status.
+
+Check #1: premium_users Collection: The server checks the main premium_users collection. For your non-premium account, this check correctly fails to find a premium entry.
+
+Check #2: Firebase Custom Claims (Likely Failure Point): The server then checks the custom claims attached directly to your Firebase Authentication user record. It's highly probable that your account has stale custom claims from a previous trial, a past subscription, or from manual testing that still say { "premium": true } or { "subscriptionStatus": "premium" }.
+
+False Positive Found: The server finds these stale claims, immediately considers you a premium user, and stops checking further.
+
+Access Granted: The server incorrectly returns a canUse: true response to the extension, which then grants you full access.
+
+This happens if the process that should have removed your premium status—like a customer.subscription.deleted Stripe webhook—failed to execute completely and did not clear the custom claims.
+
+How to Diagnose and Fix the Issue
+You can confirm and fix this with the following steps.
+
+Step 1: Use Your Debug Endpoint 🎯
+
+Your system has an API route specifically for this purpose.
+
+In a secure development environment, call your /api/test/debug-user endpoint using the userId of the non-premium account that is getting access.
+
+The JSON response from this endpoint will contain a "source" field (e.g., "source": "custom_claims"). This will tell you exactly which of the four locations is providing the incorrect "premium" status.
+
+Step 2: Manually Inspect and Correct the Stale Data 🛠️
+
+Once you confirm the source, you can fix it. If the source is custom_claims (which is most likely):
+
+Go to the Firebase Console > Authentication.
+
+Find the user account by its email or UID.
+
+Inspect its metadata. You will likely find the incorrect premium claims there. You can manually remove them using the Firebase Admin SDK.
+
+Step 3: Fix the Root Cause and Refactor 長期
+
+Fix the Offboarding Logic: Investigate your /api/webhooks/stripe-premium logic for the customer.subscription.deleted event. Ensure that when a subscription is canceled, it properly updates the user's status to "limited" in all four locations (the premium_users collection, custom claims, and any legacy collections).
+
+Centralize Your Code: The permanent solution is to follow the recommendation in your DUPLICATE-CODE-ANALYSIS-SUMMARY.md file. You must refactor the duplicated subscription validation logic into a single, reliable utility function. This will make the system's behavior consistent and prevent these kinds of bugs in the future.
