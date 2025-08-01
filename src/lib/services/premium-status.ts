@@ -511,21 +511,6 @@ async function checkStripeExtensionCustomers({ userId, email }: PremiumStatusReq
   }
 }
 
-/**
- * Helper function to create not found result
- */
-function createNotFoundResult(userId: string | null, email: string | null): PremiumStatusResult {
-  return {
-    found: false,
-    userId,
-    email,
-    subscriptionStatus: 'limited',
-    subscriptionEndDate: null,
-    deviceRegistered: false,
-    source: 'not_found',
-    confidence: 100
-  };
-}
 
 /**
  * Format premium status result for API responses
