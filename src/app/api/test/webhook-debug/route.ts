@@ -4,6 +4,11 @@ import { NextRequest, NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
+  // SECURITY: Disable in production to prevent unauthorized premium access
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Test endpoints disabled in production' }, { status: 404 });
+  }
+
   const userId = request.nextUrl.searchParams.get('userId');
   
   if (!userId) {

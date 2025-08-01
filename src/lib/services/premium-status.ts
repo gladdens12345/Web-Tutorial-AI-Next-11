@@ -81,10 +81,34 @@ export async function getPremiumStatus(request: PremiumStatusRequest): Promise<P
       confidence: 100
     };
   } else if (validResults.length === 1) {
-    // Single source found, high confidence
+    // Single source found - validate if it's premium status
     const result = validResults[0];
-    console.log('✅ Single source premium status found:', result.source);
-    finalResult = { ...result, confidence: 95 };
+    
+    if (result.subscriptionStatus === 'premium') {
+      // SECURITY: Validate premium status even from single source
+      const isValidPremium = validatePremiumStatus(result);
+      
+      if (!isValidPremium) {
+        console.log('🔒 SECURITY: Invalid premium status from single source, defaulting to limited');
+        finalResult = {
+          found: false,
+          userId: result.userId,
+          email: result.email,
+          subscriptionStatus: 'limited',
+          subscriptionEndDate: null,
+          deviceRegistered: false,
+          source: 'validated_limited',
+          confidence: 95
+        };
+      } else {
+        console.log('✅ Validated premium status from single source:', result.source);
+        finalResult = { ...result, confidence: 95 };
+      }
+    } else {
+      // Limited status doesn't need validation
+      console.log('✅ Single source limited status found:', result.source);
+      finalResult = { ...result, confidence: 95 };
+    }
   } else {
     // Multiple sources found - need conflict resolution
     console.log('⚠️ Conflict detected between sources:', validResults.map(r => r.source));
@@ -114,6 +138,33 @@ export async function getPremiumStatus(request: PremiumStatusRequest): Promise<P
 }
 
 /**
+ * Validate premium status to ensure it's not from test/fake data
+ */
+function validatePremiumStatus(result: PremiumStatusResult): boolean {
+  // Only trust premium status from authoritative sources
+  if (result.source === 'premium_users') {
+    // Must have valid Stripe customer ID (not test data)
+    if (!result.stripeCustomerId) return false;
+    if (result.stripeCustomerId.includes('test')) return false;
+    if (result.stripeCustomerId.includes('manual')) return false;
+    if (result.stripeCustomerId.includes('fake')) return false;
+    return true;
+  }
+  
+  if (result.source === 'custom_claims') {
+    // Must have valid Stripe subscription ID
+    if (!result.stripeSubscriptionId) return false;
+    if (result.stripeSubscriptionId.includes('test')) return false;
+    if (result.stripeSubscriptionId.includes('manual')) return false;
+    if (result.stripeSubscriptionId.includes('fake')) return false;
+    return true;
+  }
+  
+  // Don't trust premium status from other sources without validation
+  return false;
+}
+
+/**
  * Resolve conflicts between multiple data sources
  * Priority order: premium_users > custom_claims > customers_collection > users_collection
  */
@@ -133,7 +184,7 @@ async function resolveConflicts(results: PremiumStatusResult[], request: Premium
   const limitedResults = results.filter(r => r.subscriptionStatus === 'limited');
   
   if (premiumResults.length > 0 && limitedResults.length > 0) {
-    // Conflict between premium and limited status
+    // SECURITY: Conflict between premium and limited status - use secure resolution
     console.log('🚨 CRITICAL: Premium/Limited conflict detected:', {
       userId,
       email,
@@ -141,17 +192,56 @@ async function resolveConflicts(results: PremiumStatusResult[], request: Premium
       limitedSources: limitedResults.map(r => r.source)
     });
     
-    // Find the highest priority premium result
-    const bestPremiumResult = premiumResults.reduce((best, current) => {
+    // SECURITY FIX: Validate premium claims before accepting them
+    const validPremiumResults = premiumResults.filter(result => validatePremiumStatus(result));
+    
+    if (validPremiumResults.length === 0) {
+      // No valid premium status found - default to limited for security
+      const bestLimitedResult = limitedResults.reduce((best, current) => {
+        const currentPriority = sourcePriority[current.source as keyof typeof sourcePriority] || 0;
+        const bestPriority = sourcePriority[best.source as keyof typeof sourcePriority] || 0;
+        return currentPriority > bestPriority ? current : best;
+      });
+
+      console.log('🔒 SECURITY: No valid premium claims found, defaulting to limited');
+      
+      await logCriticalConflict({
+        userId: userId || 'unknown',
+        email: email || 'unknown',
+        conflictingSources: results.map(r => ({
+          source: r.source,
+          subscriptionStatus: r.subscriptionStatus,
+          timestamp: new Date()
+        })),
+        resolution: {
+          chosenStatus: 'limited',
+          chosenSource: bestLimitedResult.source,
+          reason: 'Security: Invalid premium claims detected, defaulting to limited'
+        },
+        context: {
+          deviceFingerprint,
+          endpoint: 'getPremiumStatus'
+        }
+      });
+      
+      return {
+        ...bestLimitedResult,
+        confidence: 90, // High confidence in security decision
+        conflictDetected: true,
+        conflictSources: results.map(r => r.source),
+        source: 'conflict_resolved'
+      };
+    }
+    
+    // Valid premium status found - use highest priority valid result
+    const bestValidPremiumResult = validPremiumResults.reduce((best, current) => {
       const currentPriority = sourcePriority[current.source as keyof typeof sourcePriority] || 0;
       const bestPriority = sourcePriority[best.source as keyof typeof sourcePriority] || 0;
       return currentPriority > bestPriority ? current : best;
     });
     
-    // Log the resolution decision
-    console.log('✅ Conflict resolved - choosing premium status from:', bestPremiumResult.source);
+    console.log('✅ Valid premium status found from:', bestValidPremiumResult.source);
     
-    // Log critical conflict for investigation
     await logCriticalConflict({
       userId: userId || 'unknown',
       email: email || 'unknown',
@@ -161,9 +251,9 @@ async function resolveConflicts(results: PremiumStatusResult[], request: Premium
         timestamp: new Date()
       })),
       resolution: {
-        chosenStatus: bestPremiumResult.subscriptionStatus,
-        chosenSource: bestPremiumResult.source,
-        reason: 'Premium status takes precedence over limited'
+        chosenStatus: bestValidPremiumResult.subscriptionStatus,
+        chosenSource: bestValidPremiumResult.source,
+        reason: 'Valid premium status verified with Stripe data'
       },
       context: {
         deviceFingerprint,
@@ -172,8 +262,8 @@ async function resolveConflicts(results: PremiumStatusResult[], request: Premium
     });
     
     return {
-      ...bestPremiumResult,
-      confidence: 75, // Lower confidence due to conflict
+      ...bestValidPremiumResult,
+      confidence: 85, // Good confidence in validated premium status
       conflictDetected: true,
       conflictSources: results.map(r => r.source),
       source: 'conflict_resolved'

@@ -9,6 +9,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateSessionJWT } from '@/lib/middleware/auth';
 
 export async function POST(request: NextRequest) {
+  // SECURITY: Disable in production to prevent unauthorized token generation
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Test endpoints disabled in production' }, { status: 404 });
+  }
+
   try {
     // WARNING: In production, this would require proper authentication
     const { userId, email, subscriptionStatus = 'limited' } = await request.json();

@@ -19,6 +19,11 @@ export const POST = withAuth(async (request: AuthenticatedRequest) => {
 
 // Unprotected endpoint - for comparison and Redis testing
 export async function GET(request: NextRequest) {
+  // SECURITY: Disable in production to prevent information disclosure
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Test endpoints disabled in production' }, { status: 404 });
+  }
+
   const authHeader = request.headers.get('authorization');
   
   // Test Redis connection
