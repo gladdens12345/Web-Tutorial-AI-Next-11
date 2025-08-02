@@ -19,7 +19,7 @@ export interface PremiumStatusResult {
   found: boolean;
   userId: string | null;
   email: string | null;
-  subscriptionStatus: 'premium' | 'limited' | 'anonymous';
+  subscriptionStatus: 'premium' | 'limited' | 'restricted' | 'anonymous';
   subscriptionEndDate: Date | null;
   deviceRegistered: boolean;
   source: 'premium_users' | 'custom_claims' | 'customers_collection' | 'users_collection' | 'not_found' | 'error' | 'conflict_resolved';
@@ -68,13 +68,13 @@ export async function getPremiumStatus(request: PremiumStatusRequest): Promise<P
   let finalResult: PremiumStatusResult;
 
   if (validResults.length === 0) {
-    // No premium status found anywhere
-    console.log('ℹ️ No premium status found in any source, defaulting to limited');
+    // No premium status found anywhere - default to restricted to block access
+    console.log('ℹ️ No premium status found in any source, defaulting to restricted');
     finalResult = {
       found: false,
       userId: userId || null,
       email: email || null,
-      subscriptionStatus: 'limited',
+      subscriptionStatus: 'restricted',
       subscriptionEndDate: null,
       deviceRegistered: false,
       source: 'not_found',
@@ -89,15 +89,15 @@ export async function getPremiumStatus(request: PremiumStatusRequest): Promise<P
       const isValidPremium = validatePremiumStatus(result);
       
       if (!isValidPremium) {
-        console.log('🔒 SECURITY: Invalid premium status from single source, defaulting to limited');
+        console.log('🔒 SECURITY: Invalid premium status from single source, defaulting to restricted');
         finalResult = {
           found: false,
           userId: result.userId,
           email: result.email,
-          subscriptionStatus: 'limited',
+          subscriptionStatus: 'restricted',
           subscriptionEndDate: null,
           deviceRegistered: false,
-          source: 'validated_limited',
+          source: 'validated_restricted',
           confidence: 95
         };
       } else {
@@ -105,8 +105,8 @@ export async function getPremiumStatus(request: PremiumStatusRequest): Promise<P
         finalResult = { ...result, confidence: 95 };
       }
     } else {
-      // Limited status doesn't need validation
-      console.log('✅ Single source limited status found:', result.source);
+      // Non-premium status (limited/restricted) doesn't need validation
+      console.log('✅ Single source non-premium status found:', result.source, result.subscriptionStatus);
       finalResult = { ...result, confidence: 95 };
     }
   } else {
@@ -196,14 +196,14 @@ async function resolveConflicts(results: PremiumStatusResult[], request: Premium
     const validPremiumResults = premiumResults.filter(result => validatePremiumStatus(result));
     
     if (validPremiumResults.length === 0) {
-      // No valid premium status found - default to limited for security
-      const bestLimitedResult = limitedResults.reduce((best, current) => {
+      // No valid premium status found - default to restricted for security
+      const bestNonPremiumResult = limitedResults.reduce((best, current) => {
         const currentPriority = sourcePriority[current.source as keyof typeof sourcePriority] || 0;
         const bestPriority = sourcePriority[best.source as keyof typeof sourcePriority] || 0;
         return currentPriority > bestPriority ? current : best;
       });
 
-      console.log('🔒 SECURITY: No valid premium claims found, defaulting to limited');
+      console.log('🔒 SECURITY: No valid premium claims found, defaulting to restricted');
       
       await logCriticalConflict({
         userId: userId || 'unknown',
@@ -214,9 +214,9 @@ async function resolveConflicts(results: PremiumStatusResult[], request: Premium
           timestamp: new Date()
         })),
         resolution: {
-          chosenStatus: 'limited',
-          chosenSource: bestLimitedResult.source,
-          reason: 'Security: Invalid premium claims detected, defaulting to limited'
+          chosenStatus: 'restricted',
+          chosenSource: bestNonPremiumResult.source,
+          reason: 'Security: Invalid premium claims detected, defaulting to restricted'
         },
         context: {
           deviceFingerprint,
@@ -225,7 +225,8 @@ async function resolveConflicts(results: PremiumStatusResult[], request: Premium
       });
       
       return {
-        ...bestLimitedResult,
+        ...bestNonPremiumResult,
+        subscriptionStatus: 'restricted', // Override to ensure restricted access
         confidence: 90, // High confidence in security decision
         conflictDetected: true,
         conflictSources: results.map(r => r.source),
@@ -508,7 +509,7 @@ function createNotFoundResult(userId?: string | null, email?: string | null): Pr
     found: false,
     userId: userId || null,
     email: email || null,
-    subscriptionStatus: 'limited',
+    subscriptionStatus: 'restricted', // Block access for unknown users
     subscriptionEndDate: null,
     deviceRegistered: false,
     source: 'not_found'
@@ -524,7 +525,7 @@ function createErrorResult(code: string, error: any): PremiumStatusResult {
     found: false,
     userId: null,
     email: null,
-    subscriptionStatus: 'limited',
+    subscriptionStatus: 'restricted', // Block access on errors for security
     subscriptionEndDate: null,
     deviceRegistered: false,
     source: 'error'
@@ -635,18 +636,6 @@ export function formatPremiumStatusResponse(result: PremiumStatusResult) {
 export function formatAuthStatusResponse(result: PremiumStatusResult) {
   const subscriptionStatus = result.subscriptionStatus;
 
-  // Convert any legacy trial status to limited
-  if (subscriptionStatus === 'trial' || (!result.found && subscriptionStatus === 'limited')) {
-    return {
-      subscriptionStatus: 'limited',
-      canUse: true,
-      reason: 'limited_daily_access',
-      timeRemaining: 3600000, // 1 hour
-      hasKnowledgeBase: false,
-      requiresSubscription: false
-    };
-  }
-
   // Premium users
   if (subscriptionStatus === 'premium') {
     return {
@@ -659,13 +648,49 @@ export function formatAuthStatusResponse(result: PremiumStatusResult) {
     };
   }
 
-  // Default: Limited users
+  // Limited users (daily free activation)
+  if (subscriptionStatus === 'limited') {
+    return {
+      subscriptionStatus: 'limited',
+      canUse: true,
+      reason: 'limited_daily_access',
+      timeRemaining: 3600000, // 1 hour
+      hasKnowledgeBase: false,
+      requiresSubscription: false
+    };
+  }
+
+  // Restricted users (blocked access)
+  if (subscriptionStatus === 'restricted') {
+    return {
+      subscriptionStatus: 'restricted',
+      canUse: false,
+      reason: 'subscription_required',
+      timeRemaining: 0,
+      hasKnowledgeBase: false,
+      requiresSubscription: true
+    };
+  }
+
+  // Convert any legacy trial status to restricted
+  if (subscriptionStatus === 'trial' || subscriptionStatus === 'anonymous') {
+    return {
+      subscriptionStatus: 'restricted',
+      canUse: false,
+      reason: 'subscription_required',
+      timeRemaining: 0,
+      hasKnowledgeBase: false,
+      requiresSubscription: true
+    };
+  }
+
+  // Default: Restricted access for unknown status
   return {
-    subscriptionStatus: 'limited',
-    canUse: true,
-    reason: 'limited_daily_access',
-    timeRemaining: 3600000, // 1 hour
+    subscriptionStatus: 'restricted',
+    canUse: false,
+    reason: 'subscription_required',
+    timeRemaining: 0,
     hasKnowledgeBase: false,
-    requiresSubscription: false
+    requiresSubscription: true
   };
 }

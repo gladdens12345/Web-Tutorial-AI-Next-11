@@ -120,35 +120,67 @@ export async function POST(request: NextRequest) {
       data: verifyDoc.data()
     });
 
-    // 🔧 FIX: Create JWT session for the extension to use
-    const sessionId = `auth_${userId}_${Date.now()}`;
-    const sessionRef = adminDb.collection('sessions').doc(sessionId);
-    
-    // Get client IP for session tracking
-    const clientIP = request.ip || 
-                     request.headers.get('x-forwarded-for')?.split(',')[0] || 
-                     request.headers.get('x-real-ip') || 
-                     'unknown';
-    
-    // Create session document
-    await sessionRef.set({
-      sessionId,
-      userId,
-      email: userEmail,
-      subscriptionStatus: 'limited', // Daily use = limited subscription
-      deviceFingerprint,
-      ipAddress: clientIP,
-      userAgent: request.headers.get('user-agent') || 'unknown',
-      startTime: now,
-      lastActivity: now,
-      lastHeartbeat: now,
-      totalUsageTime: 0,
-      heartbeatCount: 0,
-      status: 'active',
-      type: 'authenticated',
-      activatedViaWebsite: true, // Flag to indicate this came from website activation
-      dailyActivationTime: now
-    });
+    // 🔧 FIX: Check if session already exists to prevent duplicates
+    const existingSessionQuery = await adminDb.collection('sessions')
+      .where('userId', '==', userId)
+      .where('deviceFingerprint', '==', deviceFingerprint)
+      .where('status', '==', 'active')
+      .where('subscriptionStatus', '==', 'limited')
+      .orderBy('startTime', 'desc')
+      .limit(1)
+      .get();
+
+    let sessionId;
+    let sessionRef;
+
+    if (!existingSessionQuery.empty) {
+      // Use existing session instead of creating duplicate
+      const existingSession = existingSessionQuery.docs[0];
+      sessionId = existingSession.data().sessionId;
+      sessionRef = existingSession.ref;
+      
+      console.log(`♻️ Reusing existing session ${sessionId} for daily activation`);
+      
+      // Update existing session with new activity
+      await sessionRef.update({
+        lastActivity: now,
+        lastHeartbeat: now,
+        dailyActivationTime: now,
+        activatedViaWebsite: true
+      });
+    } else {
+      // Create new session only if none exists
+      sessionId = `auth_${userId}_${Date.now()}`;
+      sessionRef = adminDb.collection('sessions').doc(sessionId);
+      
+      // Get client IP for session tracking
+      const clientIP = request.ip || 
+                       request.headers.get('x-forwarded-for')?.split(',')[0] || 
+                       request.headers.get('x-real-ip') || 
+                       'unknown';
+      
+      console.log(`🆕 Creating new session ${sessionId} for daily activation`);
+      
+      // Create session document
+      await sessionRef.set({
+        sessionId,
+        userId,
+        email: userEmail,
+        subscriptionStatus: 'limited', // Daily use = limited subscription
+        deviceFingerprint,
+        ipAddress: clientIP,
+        userAgent: request.headers.get('user-agent') || 'unknown',
+        startTime: now,
+        lastActivity: now,
+        lastHeartbeat: now,
+        totalUsageTime: 0,
+        heartbeatCount: 0,
+        status: 'active',
+        type: 'authenticated',
+        activatedViaWebsite: true, // Flag to indicate this came from website activation
+        dailyActivationTime: now
+      });
+    }
 
     // Generate JWT token for the extension
     const jwtToken = generateSessionJWT({
